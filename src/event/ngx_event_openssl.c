@@ -1510,6 +1510,7 @@ ngx_int_t
 ngx_ssl_create_connection(ngx_ssl_t *ssl, ngx_connection_t *c, ngx_uint_t flags)
 {
     ngx_ssl_connection_t  *sc;
+    ngx_time_t            *tp;
 
     sc = ngx_pcalloc(c->pool, sizeof(ngx_ssl_connection_t));
     if (sc == NULL) {
@@ -1554,6 +1555,10 @@ ngx_ssl_create_connection(ngx_ssl_t *ssl, ngx_connection_t *c, ngx_uint_t flags)
         ngx_ssl_error(NGX_LOG_ALERT, c->log, 0, "SSL_set_ex_data() failed");
         return NGX_ERROR;
     }
+
+    tp = ngx_timeofday();
+    sc->handshake_sec = tp->sec;
+    sc->handshake_msec = tp->msec;
 
     c->ssl = sc;
 
@@ -1914,6 +1919,8 @@ static void
 ngx_ssl_handshake_handler(ngx_event_t *ev)
 {
     ngx_connection_t  *c;
+    ngx_time_t        *tp;
+    ngx_msec_int_t     ms;
 
     c = ev->data;
 
@@ -1928,6 +1935,15 @@ ngx_ssl_handshake_handler(ngx_event_t *ev)
     if (ngx_ssl_handshake(c) == NGX_AGAIN) {
         return;
     }
+
+    tp = ngx_timeofday();
+
+    ms = (ngx_msec_int_t)
+        ((tp->sec - c->ssl->handshake_sec) * 1000 + (tp->msec - c->ssl->handshake_msec));
+    ms = ngx_max(ms, 0);
+
+    c->ssl->handshake_sec = ms / 1000;
+    c->ssl->handshake_msec = ms % 1000;
 
     c->ssl->handler(c);
 }
@@ -2780,6 +2796,14 @@ ngx_ssl_free_buffer(ngx_connection_t *c)
             c->ssl->buf->start = NULL;
         }
     }
+
+    /*
+     * This function is called after request is finished,
+     * here we can safely cleanup handshake time variables
+     */
+
+    c->ssl->handshake_sec = 0;
+    c->ssl->handshake_msec = 0;
 }
 
 
@@ -5127,6 +5151,15 @@ ngx_ssl_get_client_v_remain(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
     return NGX_OK;
 }
 
+ngx_int_t
+ngx_ssl_get_handshake_time(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
+{
+    s->data = ngx_pnalloc(pool, NGX_TIME_T_LEN + 4);
+
+    s->len = ngx_sprintf(s->data, "%T.%03M", c->ssl->handshake_sec, c->ssl->handshake_msec) - s->data;
+
+    return NGX_OK;
+}
 
 static time_t
 ngx_ssl_parse_time(
